@@ -6,7 +6,7 @@ from migen.genlib.cdc import MultiReg
 
 class Blink(Module):
     def __init__(self, sig, led, clk_period, speed=0):
-        sec = round(1e9/clk_period)
+        sec = round(1e9/clk_period/speed)
         ctr = Signal(max=sec)
 
         self.comb += led.eq(ctr[ctr.nbits-1])
@@ -81,8 +81,8 @@ class Top(Module):
         tx = serial.tx
         self.specials += MultiReg(serial.rx, rx, reset=1) # uarts always held high
 
-        self.submodules += Blink(~rx, leds[4], clk_period)
-        self.submodules += Blink(~tx, leds[3], clk_period)
+        self.submodules += Blink(~rx, leds[4], clk_period, speed=3)
+        self.submodules += Blink(~tx, leds[3], clk_period, speed=10)
 
         clk = self.submodules.ClkDiv = ClkDiv(115200, clk_period)
         self.submodules += SendUartData(tx, clk, Array(b"henlo\r\n"))
