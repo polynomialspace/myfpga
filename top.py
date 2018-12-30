@@ -5,18 +5,17 @@ from migen.genlib.cdc import MultiReg
 
 
 class Blink(Module):
-    def __init__(self, sig, leds=[], led=0, speed=0):
-        nbits = 26 - speed # 2**25 roughly ends up being 1s
-        ctr = Signal(nbits)
+    def __init__(self, sig, led, clk_period, speed=0):
+        sec = round(1e9/clk_period)
+        ctr = Signal(max=sec)
 
-        self.comb += leds[led].eq(ctr[nbits-1])
+        self.comb += led.eq(ctr[ctr.nbits-1])
         self.sync += If(ctr > 0, ctr.eq(ctr - 1))
-        self.sync += If(sig, ctr.eq(~(1<<nbits)))
+        self.sync += If(sig, ctr.eq(~(1<<ctr.nbits)))
 
 class ClkDiv(Module):
-    def __init__(self, freq):
-        sys_clk = icestick.Platform.default_clk_period
-        bit_cyc = round((1e9 / sys_clk) / freq)
+    def __init__(self, freq, clk_period):
+        bit_cyc = round((1e9 / clk_period) / freq)
         self.tick = Signal()
         timer = Signal(max = 1 + bit_cyc)
 
@@ -72,6 +71,7 @@ class SendUartData(Module):
 
 class Top(Module):
     def __init__(self, plat):
+        clk_period = icestick.Platform.default_clk_period
         leds = []
         for i in range(5):
             leds.append(plat.request("user_led"))
@@ -81,10 +81,10 @@ class Top(Module):
         tx = serial.tx
         self.specials += MultiReg(serial.rx, rx, reset=1) # uarts always held high
 
-        self.submodules += Blink(sig=~rx, leds=leds, led=4, speed=3)
-        self.submodules += Blink(sig=~tx, leds=leds, led=3, speed=3)
+        self.submodules += Blink(~rx, leds[4], clk_period)
+        self.submodules += Blink(~tx, leds[3], clk_period)
 
-        clk = self.submodules.ClkDiv = ClkDiv(115200)
+        clk = self.submodules.ClkDiv = ClkDiv(115200, clk_period)
         self.submodules += SendUartData(tx, clk, Array(b"henlo\r\n"))
 
 if __name__ == "__main__":
