@@ -2,6 +2,7 @@
 from migen import *
 from migen.build.platforms import icestick
 from migen.genlib.cdc import MultiReg
+#from enum import Enum
 
 
 class Blink(Module):
@@ -12,6 +13,7 @@ class Blink(Module):
         self.comb += led.eq(ctr[ctr.nbits-1])
         self.sync += If(ctr > 0, ctr.eq(ctr - 1))
         self.sync += If(sig, ctr.eq(~(1<<ctr.nbits)))
+
 
 class ClkDiv(Module):
     def __init__(self, freq, clk_period):
@@ -27,11 +29,46 @@ class ClkDiv(Module):
             )
         self.comb += self.tick.eq(timer == 0)
 
-class SendUartByte(Module):
-    def __init__(self, tx, byte, clk, stb, ack):
+class UartState():
+# One set of states for both ends of the UART. This feels hacky here.     #
+#        STATE = VALUE  SETBY : DESCRIPTION                               #
+    RECV_WAIT = 0b000 # Mux  : Receive byte via RecvUartByte
+    SEND_WAIT = 0b001 # Mux  : Send byte via SendUartByte
+    IDLE_WAIT = 0b010 # Mux  : Line not ready, wait via UartDetect
+    RECV_DONE = 0b011 # Func : Tell UartMux we are finished receiving
+    SEND_DONE = 0b100 # Func : Tell UartMux we are finished sending
+    IDLE_DONE = 0b101 # Func : Tell UartMux line is detected and ready
+    PROC_RECV = 0b110 # Mux  : Tell Parent we have a byte ready to process
+    PROC_SEND = 0b111 # Mux  : Tell Parent we have finished sending a byte
+
+
+class UartFSM(Module):
+    def __init__(self, state, clk):
+        self.sync += \
+            If(clk.tick,
+                If(state == UartState.RECV_DONE,
+                    state.eq(UartState.PROC_RECV),
+                ).Elif(state == UartState.SEND_DONE,
+                    state.eq(UartState.PROC_SEND),
+                ).Elif(state == UartState.IDLE_DONE,
+                    state.eq(UartState.RECV_WAIT),
+                )
+            )
+
+class UartMux(Module):
+    def __init__(self, txpair, rxpair, byte, state, clk):
+        assert(len(txpair) == len(rxpair))
+
+        for pair in rxpair:
+            self.submodules += UartFSM(state[i], clk)
+            self.submodules += UartSendByte(txpair[i], byte[i], state[i], clk)
+            self.submodules += UartRecvByte(rxpair[i], byte[i], state[i], clk)
+            self.submodules += UartDetect(rxpair[i], txpair[i], state[i], clk)
+
+class UartSendByte(Module):
+    def __init__(self, tx, byte, state, clk):
         data = Signal(10)
         ctr = Signal(max = data.nbits)
-
         #                       .            END BITS
         #                       |........    DATA
         #                       |||||||||.   START BIT
@@ -40,13 +77,12 @@ class SendUartByte(Module):
                                (byte<<1))
         self.sync += \
             If(clk.tick,
-                If(stb,
+                If(state == UartState.RECV_WAIT,
                     tx.eq((data >> ctr) & 0b1),
                     If(ctr < (data.nbits - 1),
                         ctr.eq(ctr + 1)
                     ).Else (
-                        ack.eq(1),
-                        stb.eq(0),
+                        state.eq(UartState.RECV_DONE),
                         ctr.eq(0)
                     )
                 )
@@ -55,19 +91,18 @@ class SendUartByte(Module):
 class SendUartData(Module):
     def __init__(self, tx, clk, data):
         ctr = Signal(max=1 + len(data))
-        stb = Signal(reset=1)
-        ack = Signal()
+        state = Signal(max=0b111, reset=UartState.RECV_WAIT)
 
-        self.submodules += SendUartByte(tx, data[ctr], clk, stb, ack)
+        self.submodules += UartSendByte(tx, data[ctr], state, clk)
 
         self.sync += \
             If(clk.tick,
-                If(ack & (ctr < (len(data)-1)),
-                    ack.eq(0),
-                    stb.eq(1),
-                    ctr.eq(ctr + 1)
+                If((state == UartState.RECV_DONE) & (ctr < (len(data)-1)),
+                    ctr.eq(ctr + 1),
+                    state.eq(UartState.RECV_WAIT),
                 )
             )
+
 
 class Top(Module):
     def __init__(self, plat):
