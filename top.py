@@ -2,7 +2,7 @@
 from migen import *
 from migen.build.platforms import icestick
 from migen.genlib.cdc import MultiReg
-#from enum import Enum
+from enum import IntEnum
 
 
 class Blink(Module):
@@ -29,7 +29,7 @@ class ClkDiv(Module):
             )
         self.comb += self.tick.eq(timer == 0)
 
-class UartState():
+class UartState(IntEnum):
 # One set of states for both ends of the UART. This feels hacky here.     #
 #        STATE = VALUE  SETBY : DESCRIPTION                               #
     RECV_WAIT = 0b000 # Mux  : Receive byte via RecvUartByte
@@ -77,29 +77,39 @@ class UartSendByte(Module):
                                (byte<<1))
         self.sync += \
             If(clk.tick,
-                If(state == UartState.RECV_WAIT,
+                If(state == UartState.SEND_WAIT,
                     tx.eq((data >> ctr) & 0b1),
                     If(ctr < (data.nbits - 1),
                         ctr.eq(ctr + 1)
                     ).Else (
-                        state.eq(UartState.RECV_DONE),
+                        state.eq(UartState.SEND_DONE),
                         ctr.eq(0)
                     )
                 )
             )
 
+class UartRecvByte(Module):
+    def __init__(self, rx, byte, state, clk):
+        data = Signal(10)
+        ctr = Signal(max = data.nbits)
+
+#        self.sync += \
+#            If(clk.tick,
+#                If(state == UartState.RECV_WAIT,
+
+
 class SendUartData(Module):
     def __init__(self, tx, clk, data):
         ctr = Signal(max=1 + len(data))
-        state = Signal(max=0b111, reset=UartState.RECV_WAIT)
+        state = Signal(max=0b111, reset=UartState.SEND_WAIT)
 
         self.submodules += UartSendByte(tx, data[ctr], state, clk)
 
         self.sync += \
             If(clk.tick,
-                If((state == UartState.RECV_DONE) & (ctr < (len(data)-1)),
+                If((state == UartState.SEND_DONE) & (ctr < (len(data)-1)),
                     ctr.eq(ctr + 1),
-                    state.eq(UartState.RECV_WAIT),
+                    state.eq(UartState.SEND_WAIT),
                 )
             )
 
@@ -121,6 +131,7 @@ class Top(Module):
 
         clk = self.submodules.ClkDiv = ClkDiv(115200, clk_period)
         self.submodules += SendUartData(tx, clk, Array(b"henlo\r\n"))
+        #self.submodules += UartEcho(tx, rx, clk)
 
 if __name__ == "__main__":
     plat = icestick.Platform()
