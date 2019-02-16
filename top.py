@@ -64,8 +64,10 @@ class SendUartData(Module):
 
         fsm.act("SEND_DONE",
             If(clk.tick,
-                NextValue(ctr, ctr + 1),
-                NextState("SEND_WAIT"),
+                If(ctr < len(data),
+                    NextValue(ctr, ctr + 1),
+                    NextState("SEND_WAIT"),
+                )
             )
         )
 
