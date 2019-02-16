@@ -12,6 +12,5 @@ def RunSimulation(plat):
                    vcd_name="top.vcd")
 
 if __name__ == "__main__":
-    global plat
     plat = icestick.Platform()
     RunSimulation(plat)
