@@ -2,7 +2,7 @@
 from migen import *
 from migen.build.platforms import icestick
 from migen.genlib.cdc import MultiReg
-#from enum import Enum
+from migen.genlib.fsm import FSM
 
 
 class Blink(Module):
@@ -29,44 +29,9 @@ class ClkDiv(Module):
             )
         self.comb += self.tick.eq(timer == 0)
 
-class UartState():
-# One set of states for both ends of the UART. This feels hacky here.     #
-#        STATE = VALUE  SETBY : DESCRIPTION                               #
-    RECV_WAIT = 0b000 # Mux  : Receive byte via RecvUartByte
-    SEND_WAIT = 0b001 # Mux  : Send byte via SendUartByte
-    IDLE_WAIT = 0b010 # Mux  : Line not ready, wait via UartDetect
-    RECV_DONE = 0b011 # Func : Tell UartMux we are finished receiving
-    SEND_DONE = 0b100 # Func : Tell UartMux we are finished sending
-    IDLE_DONE = 0b101 # Func : Tell UartMux line is detected and ready
-    PROC_RECV = 0b110 # Mux  : Tell Parent we have a byte ready to process
-    PROC_SEND = 0b111 # Mux  : Tell Parent we have finished sending a byte
-
-
-class UartFSM(Module):
-    def __init__(self, state, clk):
-        self.sync += \
-            If(clk.tick,
-                If(state == UartState.RECV_DONE,
-                    state.eq(UartState.PROC_RECV),
-                ).Elif(state == UartState.SEND_DONE,
-                    state.eq(UartState.PROC_SEND),
-                ).Elif(state == UartState.IDLE_DONE,
-                    state.eq(UartState.RECV_WAIT),
-                )
-            )
-
-class UartMux(Module):
-    def __init__(self, txpair, rxpair, byte, state, clk):
-        assert(len(txpair) == len(rxpair))
-
-        for pair in rxpair:
-            self.submodules += UartFSM(state[i], clk)
-            self.submodules += UartSendByte(txpair[i], byte[i], state[i], clk)
-            self.submodules += UartRecvByte(rxpair[i], byte[i], state[i], clk)
-            self.submodules += UartDetect(rxpair[i], txpair[i], state[i], clk)
 
 class UartSendByte(Module):
-    def __init__(self, tx, byte, state, clk):
+    def __init__(self, tx, byte, fsm, clk):
         data = Signal(10)
         ctr = Signal(max = data.nbits)
         #                       .            END BITS
@@ -74,34 +39,35 @@ class UartSendByte(Module):
         #                       |||||||||.   START BIT
         #                       vvvvvvvvvv
         self.comb += data.eq((0b1000000000) |
-                               (byte<<1))
-        self.sync += \
+                             (byte<<1))
+
+        fsm.act("SEND_WAIT",
             If(clk.tick,
-                If(state == UartState.RECV_WAIT,
-                    tx.eq((data >> ctr) & 0b1),
-                    If(ctr < (data.nbits - 1),
-                        ctr.eq(ctr + 1)
-                    ).Else (
-                        state.eq(UartState.RECV_DONE),
-                        ctr.eq(0)
-                    )
+                NextValue(tx, (data >> ctr) & 0b1),
+                If(ctr < (data.nbits - 1),
+                    NextValue(ctr, ctr + 1),
+                ).Else(
+                    NextState("SEND_DONE"),
+                    NextValue(ctr, 0),
                 )
             )
+        )
+
 
 class SendUartData(Module):
     def __init__(self, tx, clk, data):
         ctr = Signal(max=1 + len(data))
-        state = Signal(max=0b111, reset=UartState.RECV_WAIT)
+        fsm = FSM(reset_state="SEND_WAIT")
 
-        self.submodules += UartSendByte(tx, data[ctr], state, clk)
+        self.submodules += fsm
+        self.submodules += UartSendByte(tx, data[ctr], fsm, clk)
 
-        self.sync += \
+        fsm.act("SEND_DONE",
             If(clk.tick,
-                If((state == UartState.RECV_DONE) & (ctr < (len(data)-1)),
-                    ctr.eq(ctr + 1),
-                    state.eq(UartState.RECV_WAIT),
-                )
+                NextValue(ctr, ctr + 1),
+                NextState("SEND_WAIT"),
             )
+        )
 
 
 class Top(Module):
@@ -121,6 +87,7 @@ class Top(Module):
 
         clk = self.submodules.ClkDiv = ClkDiv(115200, clk_period)
         self.submodules += SendUartData(tx, clk, Array(b"henlo\r\n"))
+
 
 if __name__ == "__main__":
     plat = icestick.Platform()
